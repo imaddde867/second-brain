@@ -20,6 +20,7 @@ engine = QueryEngine(store)
 
 class AskRequest(BaseModel):
     question: str
+    model: str | None = None
 
 
 class SearchRequest(BaseModel):
@@ -29,10 +30,11 @@ class SearchRequest(BaseModel):
 
 @app.post("/api/ask")
 def ask(req: AskRequest):
-    answer = engine.ask(req.question)
+    answer, model_used = engine.ask_with_model(req.question, model=req.model)
     sources = engine.search(req.question, top_k=3)
     return {
         "answer": answer,
+        "model_used": model_used,
         "sources": [
             {"title": s["title"], "path": s["path"], "tags": s.get("tags", "")}
             for s in sources
