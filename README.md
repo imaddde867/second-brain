@@ -261,6 +261,6 @@ MIT — do whatever you want with it.
 ---
 
 <p align="center">
-  <em>Built by <a href="https://imadlab.me">Imad Eddine El Mouss</a></em><br/>
+  <em>Built by <a href="https://imadlab.com">Imad Eddine El Mouss</a></em><br/>
   <sub>Because your knowledge deserves better than keyword search.</sub>
 </p>
