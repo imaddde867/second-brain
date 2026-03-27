@@ -78,9 +78,12 @@ cd cortex
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 
-# Pull the models (one-time, ~2.3GB total)
-ollama pull llama3.2
+# Pull the models (one-time, ~5.0GB total)
+ollama pull qwen2.5:7b
 ollama pull nomic-embed-text
+
+# Optional: override the default chat model for Cortex
+export CORTEX_CHAT_MODEL=qwen2.5:7b
 
 # Index your vault
 brain index ~/path/to/your/obsidian-vault
@@ -146,7 +149,7 @@ open http://localhost:5173   # or wherever your frontend dev server runs
 | Knowledge graph | **Kuzu** | Embedded graph DB — like SQLite for graphs. No server, no Docker. Runs inside your Python process. |
 | Vector store | **ChromaDB** | Local persistent vector store. Zero config. |
 | Embeddings | **nomic-embed-text** via Ollama | 768-dim, runs locally in ~5ms/chunk, outperforms ada-002 on retrieval benchmarks. MIT license. |
-| LLM | **llama3.2** via Ollama | Fast local inference. Swappable — use any model Ollama supports. |
+| LLM | **qwen2.5:7b** via Ollama | Fast local inference. Swappable — use any model Ollama supports. |
 | Parser | Custom Python | Handles YAML frontmatter, nested tags, `[[wiki-links]]`, inline tags. |
 | File watching | **watchdog** | OS-native file events. Zero polling. Live re-indexing as you edit. |
 | API | **FastAPI** | REST endpoints for the web UI. |

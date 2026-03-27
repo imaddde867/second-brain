@@ -1,4 +1,7 @@
+import os
 import re
+from typing import Any
+
 import ollama
 from graph.store import BrainStore
 
@@ -26,16 +29,99 @@ GREETING_RESPONSE = (
     "Ask me anything about your vault — projects, notes, ideas, whatever you've written down."
 )
 
+DEFAULT_CHAT_MODEL = os.getenv("CORTEX_CHAT_MODEL", "qwen2.5:7b")
+FALLBACK_CHAT_MODEL = "llama3.2:latest"
+RULE_BASED_MODEL = "rule-based"
+
 
 class QueryEngine:
-    def __init__(self, store: BrainStore, model: str = "llama3.2"):
+    def __init__(self, store: BrainStore, model: str | None = None):
         self.store = store
-        self.model = model
+        self.model = model or DEFAULT_CHAT_MODEL
         self.embed_model = "nomic-embed-text"
+        self._resolved_model_cache: dict[str, str] = {}
 
     def embed(self, text: str) -> list[float]:
         response = ollama.embeddings(model=self.embed_model, prompt=text)
         return response["embedding"]
+
+    def _is_embedding_model_entry(self, model_entry: Any) -> bool:
+        model_name = (getattr(model_entry, "model", "") or "").lower()
+        if "embed" in model_name:
+            return True
+
+        details = getattr(model_entry, "details", None)
+        family = (getattr(details, "family", "") or "").lower()
+        if "embed" in family or "bert" in family:
+            return True
+
+        families = getattr(details, "families", []) or []
+        return any(
+            "embed" in str(f).lower() or "bert" in str(f).lower()
+            for f in families
+        )
+
+    def _list_installed_chat_models(self) -> list[str]:
+        response = ollama.list()
+        models = getattr(response, "models", []) or []
+        names = [
+            m.model
+            for m in models
+            if getattr(m, "model", None) and not self._is_embedding_model_entry(m)
+        ]
+        return sorted(set(names))
+
+    def _candidate_models(
+        self, preferred_model: str, installed_chat_models: list[str], exclude: set[str]
+    ) -> list[str]:
+        candidates: list[str] = []
+        for candidate in [preferred_model, FALLBACK_CHAT_MODEL]:
+            if candidate and candidate not in candidates and candidate not in exclude:
+                candidates.append(candidate)
+
+        first_local = next((m for m in installed_chat_models if m not in exclude), None)
+        if first_local and first_local not in candidates:
+            candidates.append(first_local)
+        return candidates
+
+    def _resolve_chat_model(
+        self,
+        preferred_model: str,
+        force_refresh: bool = False,
+        exclude: set[str] | None = None,
+    ) -> str:
+        excluded = exclude or set()
+        if not force_refresh and not excluded and preferred_model in self._resolved_model_cache:
+            return self._resolved_model_cache[preferred_model]
+
+        installed_chat_models = self._list_installed_chat_models()
+        installed_lookup = set(installed_chat_models)
+        candidates = self._candidate_models(preferred_model, installed_chat_models, excluded)
+
+        for candidate in candidates:
+            if candidate in installed_lookup:
+                if not excluded:
+                    self._resolved_model_cache[preferred_model] = candidate
+                return candidate
+
+        raise RuntimeError(
+            "No usable local chat model found. Pull a model with `ollama pull qwen2.5:7b`."
+        )
+
+    def _is_model_not_found_error(self, error: Exception) -> bool:
+        if not isinstance(error, ollama.ResponseError):
+            return False
+        if getattr(error, "status_code", None) == 404:
+            return True
+        error_text = str(getattr(error, "error", "") or error).lower()
+        return "model" in error_text and "not found" in error_text
+
+    def _chat_once(self, prompt: str, model: str) -> str:
+        response = ollama.chat(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response["message"]["content"]
 
     def search(self, query: str, top_k: int = 5) -> list[dict]:
         embedding = self.embed(query)
@@ -64,11 +150,15 @@ class QueryEngine:
                 return GREETING_RESPONSE
         return None
 
-    def ask(self, question: str) -> str:
+    def ask(self, question: str, model: str | None = None) -> str:
+        answer, _ = self.ask_with_model(question, model=model)
+        return answer
+
+    def ask_with_model(self, question: str, model: str | None = None) -> tuple[str, str]:
         # Handle greetings and meta-questions without RAG
         meta = self._is_meta_question(question)
         if meta:
-            return meta
+            return meta, RULE_BASED_MODEL
 
         # Vector search for semantic matches
         context_notes = self.search(question, top_k=5)
@@ -92,7 +182,11 @@ class QueryEngine:
                 seen_titles.add(gn["title"])
 
         if not context_notes:
-            return "I couldn't find anything relevant in your vault for that question. Try rephrasing, or check that the relevant notes are indexed."
+            return (
+                "I couldn't find anything relevant in your vault for that question. "
+                "Try rephrasing, or check that the relevant notes are indexed.",
+                RULE_BASED_MODEL,
+            )
 
         context = "\n\n---\n\n".join(
             f"# {n['title']}\nPath: {n['path']}\nTags: {n.get('tags', '')}\n\n{n['content'][:800]}"
@@ -117,8 +211,29 @@ USER'S QUESTION: {question}
 
 ANSWER:"""
 
-        response = ollama.chat(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response["message"]["content"]
+        preferred_model = model or self.model
+        resolved_model = self._resolve_chat_model(preferred_model)
+
+        try:
+            return self._chat_once(prompt, resolved_model), resolved_model
+        except Exception as error:
+            if not self._is_model_not_found_error(error):
+                raise
+
+            # Model cache can be stale if a model was removed after process start.
+            self._resolved_model_cache.pop(preferred_model, None)
+            retry_model = self._resolve_chat_model(
+                preferred_model,
+                force_refresh=True,
+                exclude={resolved_model},
+            )
+
+            try:
+                return self._chat_once(prompt, retry_model), retry_model
+            except Exception as retry_error:
+                if self._is_model_not_found_error(retry_error):
+                    raise RuntimeError(
+                        "No usable local chat model found. Pull a model with "
+                        "`ollama pull qwen2.5:7b`."
+                    ) from retry_error
+                raise

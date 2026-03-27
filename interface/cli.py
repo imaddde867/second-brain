@@ -51,12 +51,20 @@ def index(vault: str = typer.Argument("~/Documents/imad-brain")):
 
 
 @app.command()
-def ask(question: str):
+def ask(
+    question: str,
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help="Override the chat model for this request (e.g., qwen2.5:7b).",
+    ),
+):
     """Ask a question about your notes."""
     _, engine = _get_store_and_engine()
     console.print(Panel(f"[bold]{question}[/bold]", title="Question"))
-    answer = engine.ask(question)
+    answer, model_used = engine.ask_with_model(question, model=model)
     console.print(Panel(answer, title="Answer", border_style="green"))
+    console.print(f"[dim]Model used: {model_used}[/dim]")
 
 
 @app.command()
