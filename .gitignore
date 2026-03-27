@@ -1,8 +1,9 @@
 .venv/
 __pycache__/
 *.pyc
-.env
 data/
-*.db
-chroma_db/
-
+.env
+*.egg-info/
+dist/
+build/
+.DS_Store
